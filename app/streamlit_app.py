@@ -1,8 +1,8 @@
 import os
 import sys
 import numpy as np
-from PIL import Image
 import streamlit as st
+from PIL import Image
 from tensorflow.keras.models import load_model
 
 # ---------- PATH SETUP ----------
@@ -12,23 +12,30 @@ sys.path.append(SRC_DIR)
 
 from data_prep import IMG_HEIGHT, IMG_WIDTH, get_data_generators  # type: ignore
 
-MODEL_PATH = os.path.join(ROOT_DIR, "src","artifacts", "best_model.h5")
+MODEL_PATH = os.path.join(ROOT_DIR, "artifacts", "best_model.h5")
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 
 
 # ---------- CACHED HELPERS ----------
 @st.cache_resource
 def load_cnn_model():
-    return load_model(MODEL_PATH)
+    try:
+        model = load_model(MODEL_PATH)
+        return model
+    except Exception as e:
+        st.error(f"Could not load model at {MODEL_PATH}: {e}")
+        return None
 
 
 @st.cache_resource
 def get_class_names():
-    # Use training generator only to get class indices
-    train_gen, _ = get_data_generators(data_dir=DATA_DIR)
-    idx_to_class = {v: k for k, v in train_gen.class_indices.items()}
-    class_names = [idx_to_class[i] for i in range(len(idx_to_class))]
-    return class_names
+    train_dir = os.path.join(DATA_DIR, "train")
+    if os.path.isdir(train_dir):
+        # sort to keep consistent order with training generator
+        classes = sorted([d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))])
+        return classes
+    # fallback: default classes (adjust if your actual classes differ)
+    return ["badminton", "cricket", "karate", "soccer", "swimming", "tennis", "wrestling"]
 
 
 def preprocess_image(image: Image.Image):
@@ -43,136 +50,46 @@ def preprocess_image(image: Image.Image):
 def main():
     st.set_page_config(
         page_title="Sports Image Classifier",
-       # page_icon="",
         layout="wide",
     )
 
-    # Custom CSS
-    st.markdown(
-        """
-        <style>
-        /* Global background */
-        .stApp {
-            background: radial-gradient(circle at top left, #1f2933, #020617);
-            color: #f9fafb;
-            font-family: "Segoe UI", system-ui, sans-serif;
-        }
-        /* Center card */
-        .main-card {
-            background: #020617;
-            border-radius: 20px;
-            padding: 2.5rem 2rem;
-            box-shadow: 0 24px 60px rgba(0,0,0,0.65);
-            border: 1px solid rgba(148,163,184,0.25);
-        }
-        .title-text {
-            font-size: 2.2rem;
-            font-weight: 700;
-            letter-spacing: 0.03em;
-        }
-        .subtitle-text {
-            font-size: 0.98rem;
-            color: #cbd5f5;
-        }
-        .prediction-label {
-            font-size: 1.4rem;
-            font-weight: 700;
-            margin-top: 0.5rem;
-        }
-        .sport-pill {
-            display: inline-block;
-            padding: 0.3rem 0.75rem;
-            border-radius: 999px;
-            background: rgba(59,130,246,0.12);
-            border: 1px solid rgba(59,130,246,0.45);
-            font-size: 0.85rem;
-            margin-right: 0.35rem;
-            margin-bottom: 0.35rem;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.sidebar.title("How to use:")
+    st.sidebar.markdown("1. Upload an image of a sport\n2. Click Predict Sport\n3. View predicted class & confidence")
 
-    # ---------- SIDEBAR ----------
-    with st.sidebar:
-        
+    st.title("Sports Image Classifier")
+    model = load_cnn_model()
+    class_names = get_class_names()
+
+    uploaded = st.file_uploader("Upload a sport image", type=["jpg", "jpeg", "png"])
+    if uploaded is None:
+        st.info("Upload an image to get started.")
+        return
+
+    image = Image.open(uploaded)
+    # use_container_width instead of deprecated use_column_width
+    st.image(image, caption="Input image", use_container_width=True)
+
+    if st.button("Predict Sport"):
+        if model is None:
+            st.error("Model not available. Check artifacts/best_model.h5")
+            return
+
+        arr = preprocess_image(image)
+        preds = model.predict(arr)[0]
+        top_idx = int(np.argmax(preds))
+        top_prob = float(preds[top_idx]) * 100.0
+        top_label = class_names[top_idx] if top_idx < len(class_names) else f"class_{top_idx}"
+
         st.markdown("---")
-        st.markdown("**How to use:**")
-        st.markdown(
-            """
-            1. Upload an image of a sport  
-            2. Click **Predict Sport**  
-            3. View predicted class & confidence  
-            """
-        )
-        st.markdown("---")
-        
+        st.subheader("Prediction")
+        st.metric(label="Predicted sport", value=top_label.capitalize())
+        st.write(f"Confidence: {top_prob:.2f}%")
 
-    # ---------- MAIN LAYOUT ----------
-    col_left, col_right = st.columns([1.15, 1])
+        # optional: show raw probabilities collapsed (comment out if you don't want)
+        # with st.expander("Show class probabilities"):
+        #     prob_map = {class_names[i]: f"{preds[i]*100:.2f}%" for i in range(len(preds))}
+        #     st.json(prob_map)
 
-    with col_left:
-    
-        st.markdown(
-             '<div style="text-align:center;">'
-            '<div class="title-text">Sports Image Classification using CNN </div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            '<p class="subtitle-text" style="text-align:center;>'
-            "Upload an image containing one of the sports from the training dataset "
-            "(Badminton, Cricket, Karate, Soccer, Swimming, Tennis, Wrestling). "
-            "The model will predict the sport and show the confidence score."
-            "</p>",
-            unsafe_allow_html=True,
-        )
 
-       # st.markdown("### <p style='text-align:center;'>Upload Image</p>", unsafe_allow_html=True)
-        uploaded_file = st.file_uploader(
-            "Choose a sports image (JPG / PNG)", type=["jpg", "jpeg", "png"], label_visibility="collapsed"
-        )
-
-        placeholder_image = st.empty()
-        result_placeholder = st.empty()
-
-        model = load_cnn_model()
-        class_names = get_class_names()
-
-        if uploaded_file is not None:
-            image = Image.open(uploaded_file)
-            placeholder_image.image(
-                image, caption="Uploaded Image", use_column_width=True
-            )
-
-            if st.button("Predict Sport"):
-                with st.spinner("Analyzing image..."):
-                    x = preprocess_image(image)
-                    preds = model.predict(x)
-                    pred_idx = int(np.argmax(preds[0]))
-                    confidence = float(np.max(preds[0]))
-                    predicted_class = class_names[pred_idx]
-
-                result_placeholder.markdown("---")
-                result_placeholder.markdown("<h3 style='text-align:center;'>Prediction Result</h3>", unsafe_allow_html=True)
-                result_placeholder.markdown(
-                    f'<div class="prediction-label" style="text-align:center;>{predicted_class}</div>',
-                    unsafe_allow_html=True,
-                )
-                st.progress(confidence)
-                st.markdown(f"<p style='text-align:center;'>Confidence: <b>{confidence*100:.2f}%</b></p>", unsafe_allow_html=True)
-
-                st.markdown("<h5 style='text-align:center;'>Class probabilities:</h5>", unsafe_allow_html=True)
-                prob_cols = st.columns(len(class_names))
-                for i, cls_name in enumerate(class_names):
-                    with prob_cols[i]:
-                        st.write(cls_name)
-                        st.write(f"{preds[0][i]*100:.1f}%")
-        else:
-            st.info(" Upload an image to get started.")
-
-        st.markdown("</div>", unsafe_allow_html=True)  # end main-card
-
-    
 if __name__ == "__main__":
     main()
